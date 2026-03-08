@@ -9,10 +9,13 @@ Regra de ouro: DRY_RUN = True impede qualquer escrita na API.
 
 import os
 import logging
+import datetime
+import pandas as pd
 from dotenv import load_dotenv
 
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
+from facebook_business.adobjects.campaign import Campaign
 from facebook_business.exceptions import FacebookRequestError
 
 
@@ -181,3 +184,159 @@ class MetaAdsManager:
 
         logger.info(f"🔓 [PRODUÇÃO] Executando: {acao}")
         return True
+
+    def extrair_metricas_campanhas(self, dias: int = 7) -> pd.DataFrame:
+        """
+        Extrai as métricas de performance das campanhas ativas.
+        
+        Args:
+            dias: Número de dias para analisar (padrão: 7 últimos dias)
+            
+        Returns:
+            DataFrame do pandas com as métricas formatadas.
+        """
+        logger.info(f"📊 Extraindo métricas dos últimos {dias} dias...")
+        
+        # Parâmetros da consulta
+        params = {
+            'level': 'campaign',
+            'filtering': [{'field': 'campaign.effective_status', 'operator': 'IN', 'value': ['ACTIVE', 'PAUSED', 'ARCHIVED']}],
+            'time_range': {
+                'since': (datetime.date.today() - datetime.timedelta(days=dias)).strftime('%Y-%m-%d'),
+                'until': datetime.date.today().strftime('%Y-%m-%d')
+            }
+        }
+        
+        # Campos que queremos extrair
+        fields = [
+            'campaign_name',
+            'campaign_id',
+            'spend',
+            'clicks',
+            'impressions',
+            'cpc',
+            'cpm',
+            'ctr',
+            'actions',
+            'cost_per_action_type'
+        ]
+        
+        try:
+            # Requisita os insights da conta
+            insights = self.conta.get_insights(fields=fields, params=params)
+            
+            # Se não houver dados, retorna um DataFrame vazio com as colunas certas
+            if not insights:
+                logger.warning("Nenhuma campanha ativa com gastos/impressões encontrada neste período.")
+                return pd.DataFrame(columns=['Campanha', 'ID', 'Gasto', 'Impressões', 'Cliques', 'CTR', 'CPC', 'CPM', 'CPA', 'Conversões'])
+                
+            # Processa os dados brutos da Meta para um formato tabular amigável
+            dados_processados = []
+            
+            for item in insights:
+                # Meta retorna actions como uma lista, precisamos encontrar as conversões
+                conversoes = 0
+                cpa = 0.0
+                
+                if 'actions' in item:
+                    # Adaptável conforme o seu pixer. Pode contar 'lead', 'purchase', etc.
+                    for action in item['actions']:
+                        if action['action_type'] in ['lead', 'offsite_conversion.fb_pixel_lead', 'omni_purchase']:
+                            conversoes += float(action['value'])
+                
+                if conversoes > 0:
+                    cpa = float(item.get('spend', 0)) / conversoes
+                
+                linha = {
+                    'Campanha': item.get('campaign_name'),
+                    'ID': item.get('campaign_id'),
+                    'Gasto': float(item.get('spend', 0)),
+                    'Impressões': int(item.get('impressions', 0)),
+                    'Cliques': int(item.get('clicks', 0)),
+                    'CTR': float(item.get('ctr', 0)) if 'ctr' in item else 0.0,
+                    'CPC': float(item.get('cpc', 0)) if 'cpc' in item else 0.0,
+                    'CPM': float(item.get('cpm', 0)) if 'cpm' in item else 0.0,
+                    'CPA': cpa,
+                    'Conversões': conversoes
+                }
+                dados_processados.append(linha)
+                
+            # Cria o DataFrame
+            df = pd.DataFrame(dados_processados)
+            logger.info(f"✅ Extração concluída. {len(df)} campanhas processadas.")
+            return df
+            
+        except FacebookRequestError as e:
+            logger.error(f"❌ Erro ao extrair métricas: {e.api_error_message()}")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.exception(f"❌ Erro inesperado ao extrair métricas: {e}")
+            return pd.DataFrame()
+
+    def _pausar_campanha(self, campaign_id: str, campaign_name: str) -> bool:
+        """
+        Pausa uma campanha na Meta Ads API (se DRY_RUN permitir).
+        """
+        acao = f"Pausar campanha '{campaign_name}' ({campaign_id})"
+        
+        # Verifica a trava de segurança antes de qualquer escrita
+        if not self._verificar_dry_run(acao):
+            return False
+            
+        try:
+            campanha = Campaign(campaign_id)
+            campanha.api_update(fields=[], params={'status': 'PAUSED'})
+            logger.info(f"✅ Sucesso: Campanha '{campaign_name}' foi PAUSADA na Meta.")
+            return True
+        except FacebookRequestError as e:
+            logger.error(f"❌ Falha ao pausar campanha '{campaign_name}': {e.api_error_message()}")
+            return False
+        except Exception as e:
+            logger.exception(f"❌ Erro inesperado ao pausar '{campaign_name}': {e}")
+            return False
+
+    def wasted_spend_finder(self, df_metricas: pd.DataFrame, limite_gasto: float = 30.0) -> None:
+        """
+        Analisa o DataFrame de métricas em busca de campanhas que gastaram 
+        mais do que o limite definido sem gerar nenhuma conversão e toma
+        a decisão de pausá-las.
+        
+        Args:
+            df_metricas: DataFrame retornado por extrair_metricas_campanhas
+            limite_gasto: Valor monetário máximo tolerado sem conversão (R$)
+        """
+        logger.info("-" * 60)
+        logger.info(f"🕵️  Iniciando Wasted Spend Finder (Limite: R$ {limite_gasto:.2f} s/ conversão)...")
+        
+        if df_metricas.empty:
+            logger.warning("Nenhum dado para analisar.")
+            return
+            
+        # Filtro: Campanhas gastando mais que o limite E com zero conversões
+        campanhas_ineficientes = df_metricas[
+            (df_metricas['Gasto'] > limite_gasto) & 
+            (df_metricas['Conversões'] == 0)
+        ]
+        
+        total_ineficientes = len(campanhas_ineficientes)
+        
+        if total_ineficientes == 0:
+            logger.info("✅ Nenhuma campanha ineficiente encontrada. Orçamento seguro.")
+            return
+            
+        logger.warning(f"🚨 ALERTA: {total_ineficientes} campanha(s) ineficiente(s) detectada(s)!")
+        
+        # Itera sobre as campanhas problemáticas e aplica a regra de negócio (pausar)
+        for _, row in campanhas_ineficientes.iterrows():
+            nome = row['Campanha']
+            cid = row['ID']
+            gasto = row['Gasto']
+            
+            logger.warning(f"  -> AVALIANDO: '{nome}' (Gasto: R$ {gasto:.2f} | Conv: 0)")
+            
+            # Chama o método de pausar (que será barrado pelo DRY_RUN se estiver ativo)
+            self._pausar_campanha(campaign_id=cid, campaign_name=nome)
+            
+        logger.info("🏁 Wasted Spend Finder concluído.")
+
+
