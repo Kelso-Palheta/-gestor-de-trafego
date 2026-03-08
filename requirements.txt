@@ -1,0 +1,15 @@
+# ============================================
+# Gestor de Tráfego — Dependências do Projeto
+# ============================================
+
+# Integração com Meta Ads (Graph API)
+facebook-business>=19.0.0
+
+# Carregamento seguro de variáveis de ambiente
+python-dotenv>=1.0.0
+
+# Análise e manipulação de dados/métricas
+pandas>=2.0.0
+
+# Motor de IA (Claude) para decisões autônomas
+anthropic>=0.40.0
