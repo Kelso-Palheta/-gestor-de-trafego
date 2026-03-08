@@ -69,19 +69,6 @@ def main():
             
             df_metricas = gerenciador.extrair_metricas_campanhas(dias=30)
             
-            # --- MOCK PARA TESTE VISUAL ---
-            if df_metricas.empty:
-                logger.info("⚠️ Injetando dados simulados para demonstrar o Wasted Spend Finder e Scale Up/Down...")
-                dados_simulados = [
-                    {'Campanha': 'Lead Magnet - Público A', 'ID': '11111', 'Gasto': 15.50, 'Conversões': 0, 'CPA': 0.0},
-                    {'Campanha': 'Remarketing - Visitantes', 'ID': '22222', 'Gasto': 55.00, 'Conversões': 2, 'CPA': 27.50},  # CRÍTICO (meta 20) -> Scale Down
-                    {'Campanha': 'Palheta Brutal - Nova Venda', 'ID': '33333', 'Gasto': 35.50, 'Conversões': 0, 'CPA': 0.0}, # INEFICIENTE (>30 s/ venda) -> Pausar
-                    {'Campanha': 'Campanha Teste Novo', 'ID': '44444', 'Gasto': 5.00, 'Conversões': 0, 'CPA': 0.0},
-                    {'Campanha': 'Campanha Escala Forte', 'ID': '55555', 'Gasto': 30.00, 'Conversões': 3, 'CPA': 10.00}   # EXCELENTE (cpa R$10) -> Scale Up
-                ]
-                df_metricas = pd.DataFrame(dados_simulados)
-            # ------------------------------
-
             if not df_metricas.empty:
                 logger.info("\n" + df_metricas.to_string())
                 

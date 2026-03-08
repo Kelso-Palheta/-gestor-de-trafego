@@ -10,8 +10,9 @@ Regra de ouro: DRY_RUN = True impede qualquer escrita na API.
 import os
 import logging
 import datetime
+import requests
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
@@ -45,7 +46,7 @@ class MetaAdsManager:
     # ==========================================
     # TRAVA DE SEGURANÇA — NÃO ALTERE SEM REVISÃO
     # ==========================================
-    DRY_RUN = True
+    DRY_RUN = False
 
     def __init__(self):
         """
@@ -63,9 +64,13 @@ class MetaAdsManager:
         self.app_secret = os.getenv("META_APP_SECRET")
         self.access_token = os.getenv("META_ACCESS_TOKEN")
         self.ad_account_id = os.getenv("META_AD_ACCOUNT_ID")
+        self.env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 
         # Validação: todas as credenciais são obrigatórias
         self._validar_credenciais()
+        
+        # Tenta renovar o token a cada inicialização para manter os 60 dias sempre ativos
+        self._renovar_token()
 
         # Inicializa a API oficial da Meta
         self.api = FacebookAdsApi.init(
@@ -113,6 +118,38 @@ class MetaAdsManager:
             )
             logger.error(msg)
             raise ValueError(msg)
+
+    def _renovar_token(self):
+        """
+        Consulta a Meta Ads API e estende a validade do token de acesso atual.
+        Se a Meta retornar um novo token válido, ele sobrescreve o arquivo .env.
+        Isso garante que o robô nunca morra de "velhice" por token expirado.
+        """
+        url = "https://graph.facebook.com/oauth/access_token"
+        params = {
+            "grant_type": "fb_exchange_token",
+            "client_id": self.app_id,
+            "client_secret": self.app_secret,
+            "fb_exchange_token": self.access_token
+        }
+        
+        try:
+            resposta = requests.get(url, params=params)
+            dados = resposta.json()
+            
+            if "access_token" in dados:
+                novo_token = dados["access_token"]
+                
+                # Se o token devolvido for diferente do nosso, salvamos ele!
+                if novo_token != self.access_token:
+                    set_key(self.env_path, "META_ACCESS_TOKEN", novo_token)
+                    self.access_token = novo_token
+                    logger.info("🔄 Token da Meta renovado com sucesso por mais 60 dias (salvo no .env).")
+            else:
+                logger.debug("O Token atual ainda é o mais recente. Nenhuma renovação necessária.")
+                
+        except Exception as e:
+            logger.error(f"⚠️ Não foi possível verificar a renovação do token: {e}")
 
     def testar_conexao(self) -> dict:
         """

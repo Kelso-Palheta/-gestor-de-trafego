@@ -8,8 +8,11 @@ facebook-business>=19.0.0
 # Carregamento seguro de variáveis de ambiente
 python-dotenv>=1.0.0
 
-# Análise e manipulação de dados/métricas
+# Analytics / Data Science
 pandas>=2.0.0
 
-# Motor de IA (Claude) para decisões autônomas
+# IA Generativa
 anthropic>=0.40.0
+
+# Dashboard / UI
+streamlit>=1.30.0
