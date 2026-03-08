@@ -71,12 +71,13 @@ def main():
             
             # --- MOCK PARA TESTE VISUAL ---
             if df_metricas.empty:
-                logger.info("⚠️ Injetando dados simulados para demonstrar o Wasted Spend Finder...")
+                logger.info("⚠️ Injetando dados simulados para demonstrar o Wasted Spend Finder e Scale Up/Down...")
                 dados_simulados = [
-                    {'Campanha': 'Lead Magnet - Público A', 'ID': '11111', 'Gasto': 15.50, 'Conversões': 0},
-                    {'Campanha': 'Remarketing - Visitantes', 'ID': '22222', 'Gasto': 55.00, 'Conversões': 2},
-                    {'Campanha': 'Palheta Brutal - Nova Venda', 'ID': '33333', 'Gasto': 35.50, 'Conversões': 0},  # INEFICIENTE
-                    {'Campanha': 'Campanha Teste Novo', 'ID': '44444', 'Gasto': 5.00, 'Conversões': 0}
+                    {'Campanha': 'Lead Magnet - Público A', 'ID': '11111', 'Gasto': 15.50, 'Conversões': 0, 'CPA': 0.0},
+                    {'Campanha': 'Remarketing - Visitantes', 'ID': '22222', 'Gasto': 55.00, 'Conversões': 2, 'CPA': 27.50},  # CRÍTICO (meta 20) -> Scale Down
+                    {'Campanha': 'Palheta Brutal - Nova Venda', 'ID': '33333', 'Gasto': 35.50, 'Conversões': 0, 'CPA': 0.0}, # INEFICIENTE (>30 s/ venda) -> Pausar
+                    {'Campanha': 'Campanha Teste Novo', 'ID': '44444', 'Gasto': 5.00, 'Conversões': 0, 'CPA': 0.0},
+                    {'Campanha': 'Campanha Escala Forte', 'ID': '55555', 'Gasto': 30.00, 'Conversões': 3, 'CPA': 10.00}   # EXCELENTE (cpa R$10) -> Scale Up
                 ]
                 df_metricas = pd.DataFrame(dados_simulados)
             # ------------------------------
@@ -86,6 +87,9 @@ def main():
                 
                 # 5. Otimização de Orçamento (Fase 4: Wasted Spend Finder)
                 gerenciador.wasted_spend_finder(df_metricas=df_metricas, limite_gasto=30.0)
+                
+                # 6. Otimização de CPA (Fase 5: Scale Up / Scale Down)
+                gerenciador.otimizador_cpa(df_metricas=df_metricas, meta_cpa=20.0, min_conversoes=2)
                 
             else:
                 logger.warning("Nenhum dado retornado para exibir ou otimizar no momento.")

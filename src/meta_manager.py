@@ -19,6 +19,7 @@ from facebook_business.adobjects.campaign import Campaign
 from facebook_business.exceptions import FacebookRequestError
 
 from src.telegram_manager import TelegramNotifier
+from src.ai_manager import CriativoAI
 
 
 # Configuração do logger
@@ -78,6 +79,9 @@ class MetaAdsManager:
         
         # Instância nativa do Telegram para envio de alertas
         self.telegram = TelegramNotifier()
+        
+        # Instância da IA Generativa (Anthropic)
+        self.ia = CriativoAI()
 
         # Log de inicialização
         logger.info("MetaAdsManager inicializado com sucesso.")
@@ -341,11 +345,114 @@ class MetaAdsManager:
                 texto_alerta += f"\n🛑 *A IA pausou a campanha:*\n- Nome: {nome}\n- Gasto desperdiçado: R$ {gasto:.2f}"
             else:
                 texto_alerta += f"\n⚠️ *A IA tentou pausar (ou DRY RUN) a campanha:*\n- Nome: {nome}\n- Gasto desperdiçado: R$ {gasto:.2f}"
+            
+            # Pede para a Inteligência Artificial pensar num novo criativo!
+            if self.ia.ativo:
+                copy_sugerida = self.ia.gerar_copy_anuncio(nome_campanha=nome, motivo="Gasto alto sem conversões")
+                texto_alerta += f"\n\n🤖 *Sugestão do Claude AI para reviver esta oferta:*\n{copy_sugerida}\n"
                 
         # Dispara o alerta no Telegram!
         if self.telegram.ativo:
             self.telegram.enviar_alerta(texto_alerta)
             
         logger.info("🏁 Wasted Spend Finder concluído.")
+
+    def _ajustar_orcamento_campanha(self, campaign_id: str, campaign_name: str, multiplicador: float) -> str:
+        """
+        Lê o orçamento diário atual da campanha e aplica um multiplicador.
+        O valor do budget da Meta sempre vem em centavos (ex: 5000 = R$ 50,00).
+        """
+        try:
+            campanha = Campaign(campaign_id)
+            dados = campanha.api_get(fields=['daily_budget'])
+            
+            if 'daily_budget' not in dados:
+                msg = f"Campanha '{campaign_name}' não utiliza orçamento diário. Pulando."
+                logger.warning(msg)
+                return msg
+                
+            orcamento_atual_centavos = int(dados['daily_budget'])
+            novo_orcamento_centavos = int(orcamento_atual_centavos * multiplicador)
+            
+            atual_reais = orcamento_atual_centavos / 100
+            novo_reais = novo_orcamento_centavos / 100
+            tipo_ajuste = "AUMENTAR" if multiplicador > 1 else "REDUZIR"
+            percentual = abs((multiplicador - 1) * 100)
+            
+            acao = f"{tipo_ajuste} orçamento de '{campaign_name}' de R$ {atual_reais:.2f} para R$ {novo_reais:.2f} ({int(percentual)}%)"
+            
+            # Trava de segurança
+            if not self._verificar_dry_run(acao):
+                return f"[DRY-RUN] Evitou: {acao}"
+                
+            campanha.api_update(fields=[], params={'daily_budget': str(novo_orcamento_centavos)})
+            logger.info(f"✅ Sucesso: O orçamento de '{campaign_name}' foi ajustado para R$ {novo_reais:.2f}.")
+            return f"✅ {acao}"
+            
+        except FacebookRequestError as e:
+            erro = f"Falha na Meta API ao tentar ajustar '{campaign_name}': {e.api_error_message()}"
+            logger.error(f"❌ {erro}")
+            return erro
+        except Exception as e:
+            erro = f"Erro inesperado ao ajustar '{campaign_name}': {e}"
+            logger.exception(f"❌ {erro}")
+            return erro
+
+    def otimizador_cpa(self, df_metricas: pd.DataFrame, meta_cpa: float = 20.0, min_conversoes: int = 2) -> None:
+        """
+        Fase 5: Scale Up e Scale Down baseado em CPA.
+        - Se o CPA estiver 20% ABAIXO da meta e tiver conversões: Aumenta o orçamento em 15%.
+        - Se o CPA estiver 20% ACIMA da meta e tiver conversões: Reduz o orçamento em 10%.
+        """
+        logger.info("-" * 60)
+        logger.info(f"📈 Iniciando Otimizador de CPA (Meta alvo: R$ {meta_cpa:.2f})...")
+        
+        if df_metricas.empty:
+            logger.warning("Nenhum dado para analisar.")
+            return
+
+        cpa_excelente = meta_cpa * 0.8  # 20% mais barato que a meta (bom)
+        cpa_critico = meta_cpa * 1.2    # 20% mais caro que a meta (ruim)
+        
+        campanhas_boas = []
+        campanhas_ruins = []
+        texto_telegram = f"📈 *Relatório de Otimização (Meta: R$ {meta_cpa:.2f})*\n\n"
+        houve_acao = False
+
+        for _, row in df_metricas.iterrows():
+            nome = row['Campanha']
+            cid = row['ID']
+            cpa_atual = row['CPA']
+            conversoes = row['Conversões']
+            
+            # Só otimiza se já houve um mínimo de inteligência (conversões) na campanha
+            if conversoes >= min_conversoes:
+                if cpa_atual <= cpa_excelente:
+                    logger.info(f"  🌟 EXCELENTE: '{nome}' (CPA R$ {cpa_atual:.2f} | Conv: {conversoes}) -> Scale Up +15%")
+                    resultado = self._ajustar_orcamento_campanha(cid, nome, multiplicador=1.15)
+                    campanhas_boas.append(resultado)
+                    houve_acao = True
+                    
+                elif cpa_atual >= cpa_critico:
+                    logger.warning(f"  ⚠️ CRÍTICO: '{nome}' (CPA R$ {cpa_atual:.2f} | Conv: {conversoes}) -> Scale Down -10%")
+                    resultado = self._ajustar_orcamento_campanha(cid, nome, multiplicador=0.90)
+                    campanhas_ruins.append(resultado)
+                    houve_acao = True
+                else:
+                    logger.info(f"  ⚖️ ESTÁVEL: '{nome}' (CPA R$ {cpa_atual:.2f} | Conv: {conversoes}) -> Nenhuma ação.")
+
+        # Dispara o resumo no Telegram!
+        if houve_acao and self.telegram.ativo:
+            if campanhas_boas:
+                texto_telegram += "*🚀 Campanhas Escaladas:*\n" + "\n".join([f"- {r}" for r in campanhas_boas]) + "\n\n"
+            if campanhas_ruins:
+                texto_telegram += "*📉 Campanhas Reduzidas:*\n" + "\n".join([f"- {r}" for r in campanhas_ruins])
+                
+            self.telegram.enviar_mensagem(texto_telegram)
+            
+        elif not houve_acao:
+            logger.info("Nenhuma campanha se qualificou para Scale Up ou Down hoje.")
+
+        logger.info("🏁 Otimizador de CPA concluído.")
 
 
