@@ -18,6 +18,8 @@ from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.campaign import Campaign
 from facebook_business.exceptions import FacebookRequestError
 
+from src.telegram_manager import TelegramNotifier
+
 
 # Configuração do logger
 logger = logging.getLogger(__name__)
@@ -73,6 +75,9 @@ class MetaAdsManager:
 
         # Referência à conta de anúncios
         self.conta = AdAccount(self.ad_account_id)
+        
+        # Instância nativa do Telegram para envio de alertas
+        self.telegram = TelegramNotifier()
 
         # Log de inicialização
         logger.info("MetaAdsManager inicializado com sucesso.")
@@ -300,10 +305,6 @@ class MetaAdsManager:
         Analisa o DataFrame de métricas em busca de campanhas que gastaram 
         mais do que o limite definido sem gerar nenhuma conversão e toma
         a decisão de pausá-las.
-        
-        Args:
-            df_metricas: DataFrame retornado por extrair_metricas_campanhas
-            limite_gasto: Valor monetário máximo tolerado sem conversão (R$)
         """
         logger.info("-" * 60)
         logger.info(f"🕵️  Iniciando Wasted Spend Finder (Limite: R$ {limite_gasto:.2f} s/ conversão)...")
@@ -312,7 +313,6 @@ class MetaAdsManager:
             logger.warning("Nenhum dado para analisar.")
             return
             
-        # Filtro: Campanhas gastando mais que o limite E com zero conversões
         campanhas_ineficientes = df_metricas[
             (df_metricas['Gasto'] > limite_gasto) & 
             (df_metricas['Conversões'] == 0)
@@ -326,7 +326,9 @@ class MetaAdsManager:
             
         logger.warning(f"🚨 ALERTA: {total_ineficientes} campanha(s) ineficiente(s) detectada(s)!")
         
-        # Itera sobre as campanhas problemáticas e aplica a regra de negócio (pausar)
+        # Mensagem formatada pro Telegram
+        texto_alerta = f"Identificamos *{total_ineficientes}* campanha(s) gastando mais do que o limite fixado (*R$ {limite_gasto:.2f}*) sem gerar conversão.\n"
+        
         for _, row in campanhas_ineficientes.iterrows():
             nome = row['Campanha']
             cid = row['ID']
@@ -335,7 +337,14 @@ class MetaAdsManager:
             logger.warning(f"  -> AVALIANDO: '{nome}' (Gasto: R$ {gasto:.2f} | Conv: 0)")
             
             # Chama o método de pausar (que será barrado pelo DRY_RUN se estiver ativo)
-            self._pausar_campanha(campaign_id=cid, campaign_name=nome)
+            if self._pausar_campanha(campaign_id=cid, campaign_name=nome):
+                texto_alerta += f"\n🛑 *A IA pausou a campanha:*\n- Nome: {nome}\n- Gasto desperdiçado: R$ {gasto:.2f}"
+            else:
+                texto_alerta += f"\n⚠️ *A IA tentou pausar (ou DRY RUN) a campanha:*\n- Nome: {nome}\n- Gasto desperdiçado: R$ {gasto:.2f}"
+                
+        # Dispara o alerta no Telegram!
+        if self.telegram.ativo:
+            self.telegram.enviar_alerta(texto_alerta)
             
         logger.info("🏁 Wasted Spend Finder concluído.")
 

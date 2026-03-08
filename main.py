@@ -7,9 +7,10 @@ com a Meta Ads API e imprime o resultado no terminal.
 
 import sys
 import logging
-
 import pandas as pd
+
 from src.meta_manager import MetaAdsManager
+from src.telegram_manager import TelegramNotifier
 
 
 # ============================================
@@ -39,8 +40,13 @@ def main():
     logger.info("=" * 60)
 
     try:
-        # 1. Instancia o gerenciador (carrega .env e autentica)
+        # 1. Instancia o gerenciador e o bot (carrega .env e autentica)
         gerenciador = MetaAdsManager()
+        telegram = TelegramNotifier()
+        
+        # Envia mensagem inicial se configurado
+        if telegram.ativo:
+            telegram.enviar_mensagem("🟢 *Gestor de Tráfego* ativado com sucesso. Iniciando rotina de testes...")
 
         # 2. Testa a conexão com a Meta Ads API
         logger.info("-" * 60)
